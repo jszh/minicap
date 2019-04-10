@@ -13,6 +13,7 @@
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <chrono>
 
 #include <Minicap.hpp>
 
@@ -27,6 +28,8 @@
 #define DEFAULT_SOCKET_NAME "minicap"
 #define DEFAULT_DISPLAY_ID 0
 #define DEFAULT_JPG_QUALITY 80
+
+using namespace std::chrono;
 
 enum {
   QUIRK_DUMB            = 1,
@@ -145,6 +148,19 @@ putUInt32LE(unsigned char* data, int value) {
   data[1] = (value & 0x0000FF00) >> 8;
   data[2] = (value & 0x00FF0000) >> 16;
   data[3] = (value & 0xFF000000) >> 24;
+  return 0;
+}
+
+static int
+putUInt64LE(unsigned char* data, uint64_t value) {
+  data[0] = (value & (0xFFULL << 0)) >> 0;
+  data[1] = (value & (0xFFULL << 8)) >> 8;
+  data[2] = (value & (0xFFULL << 16)) >> 16;
+  data[3] = (value & (0xFFULL << 24)) >> 24;
+  data[4] = (value & (0xFFULL << 32)) >> 32;
+  data[5] = (value & (0xFFULL << 40)) >> 40;
+  data[6] = (value & (0xFFULL << 48)) >> 48;
+  data[7] = (value & (0xFFULL << 56)) >> 56;
   return 0;
 }
 
@@ -339,9 +355,9 @@ main(int argc, char* argv[]) {
   desiredInfo.height = proj.virtualHeight;
   desiredInfo.orientation = proj.rotation;
 
-  // Leave a 4-byte padding to the encoder so that we can inject the size
+  // Leave a 8-byte padding to the encoder so that we can inject the size and timestamp
   // to the same buffer.
-  JpgEncoder encoder(4, 0);
+  JpgEncoder encoder(12, 0);
   Minicap::Frame frame;
   bool haveFrame = false;
 
@@ -490,6 +506,11 @@ main(int argc, char* argv[]) {
 
       haveFrame = true;
 
+      // Get timestamp for current frame
+      uint64_t timestamp = duration_cast< milliseconds >(
+        system_clock::now().time_since_epoch()
+      ).count();
+
       // Encode the frame.
       if (!encoder.encode(&frame, quality)) {
         MCERROR("Unable to encode frame");
@@ -498,12 +519,13 @@ main(int argc, char* argv[]) {
 
       // Push it out synchronously because it's fast and we don't care
       // about other clients.
-      unsigned char* data = encoder.getEncodedData() - 4;
-      size_t size = encoder.getEncodedSize();
+      unsigned char* data = encoder.getEncodedData() - 12;
+      size_t size = encoder.getEncodedSize(); // add size of timestamp
 
       putUInt32LE(data, size);
+      putUInt64LE(data + 4, timestamp);
 
-      if (pumps(fd, data, size + 4) < 0) {
+      if (pumps(fd, data, size + 12) < 0) {
         break;
       }
 
